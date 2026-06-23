@@ -1,0 +1,10 @@
+import os
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://isiwsanzcbtoihelnpue.supabase.co")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
+
+DEFAULT_VAT_RATE = float(os.getenv("DEFAULT_VAT_RATE", 12.0))
+DEFAULT_EXCHANGE_RATE = float(os.getenv("DEFAULT_EXCHANGE_RATE", 56.0))
