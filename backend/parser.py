@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 import re, sys, os
+from dotenv import load_dotenv
+
+# Awtomatikong hahanapin at babasahin ang .env file sa tabi ng script
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
 from core.config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from supabase import create_client
 

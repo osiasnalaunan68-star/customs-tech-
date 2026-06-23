@@ -4,7 +4,6 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import HSLookup from './pages/HSLookup'
 import DutyCalculator from './pages/DutyCalculator'
-import Classifier from './pages/Classifier'
 import Clients from './pages/Clients'
 import Shipments from './pages/Shipments'
 import Entries from './pages/Entries'
@@ -14,48 +13,53 @@ const NAV = [
   { id:'dashboard',  label:'Dashboard',       icon:'◼', g:'Overview' },
   { id:'hs-lookup',  label:'HS Code Lookup',  icon:'🔍', g:'Tariff Tools' },
   { id:'calculator', label:'Duty Calculator', icon:'🧮', g:'Tariff Tools' },
-  { id:'classifier', label:'AI Classifier',   icon:'✦', g:'Tariff Tools' },
   { id:'clients',    label:'Clients',         icon:'👥', g:'Broker Tools' },
   { id:'shipments',  label:'Shipments',       icon:'🚢', g:'Broker Tools' },
   { id:'entries',    label:'Entry Worksheets',icon:'📄', g:'Broker Tools' },
   { id:'settings',   label:'Settings',        icon:'⚙️', g:'Account' },
 ]
+
 const MNAV = [
   { id:'hs-lookup',  label:'HS',        icon:'🔍' },
   { id:'calculator', label:'Calc',      icon:'🧮' },
-  { id:'classifier', label:'AI',        icon:'✦' },
   { id:'entries',    label:'Entries',   icon:'📄' },
   { id:'dashboard',  label:'Home',      icon:'◼' },
 ]
+
 function Page({ p }) {
   if (p==='dashboard')  return <Dashboard/>
   if (p==='hs-lookup')  return <HSLookup/>
   if (p==='calculator') return <DutyCalculator/>
-  if (p==='classifier') return <Classifier/>
   if (p==='clients')    return <Clients/>
   if (p==='shipments')  return <Shipments/>
   if (p==='entries')    return <Entries/>
   if (p==='settings')   return <Settings/>
   return <Dashboard/>
 }
+
 export default function App() {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState('hs-lookup')
   const [theme, setTheme] = useState(localStorage.getItem('ct-theme')||'dark')
+
   useEffect(() => {
     supabase.auth.getSession().then(({data:{session}})=>{setSession(session);setLoading(false)})
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_e,s)=>setSession(s))
     return ()=>subscription.unsubscribe()
   },[])
+
   useEffect(()=>{
     document.documentElement.setAttribute('data-theme',theme)
     localStorage.setItem('ct-theme',theme)
   },[theme])
+
   if (loading) return <div className="loading"><div className="spin"/></div>
   if (!session) return <Login theme={theme} toggleTheme={()=>setTheme(t=>t==='light'?'dark':'light')}/>
+
   const groups=[...new Set(NAV.map(n=>n.g))]
   const cur=NAV.find(n=>n.id===page)
+
   return (
     <div className="app">
       <aside className="sidebar">
