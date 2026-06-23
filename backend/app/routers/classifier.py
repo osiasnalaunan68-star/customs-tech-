@@ -17,7 +17,7 @@ def classify(input: ClassifyInput):
     if not gemini_key:
         raise HTTPException(503, "Gemini API key not configured in Render environment")
     
-    # Itinama natin mula v1beta patungong v1 stable endpoint base sa nahanap mo!
+    # Siguradong v1 stable endpoint na ang nakalagay
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     
@@ -41,8 +41,6 @@ def classify(input: ClassifyInput):
         
         with urllib.request.urlopen(req) as response:
             res_data = json.loads(response.read().decode('utf-8'))
-            
-            # Pagkuha ng text mula sa stable v1 structure
             text_result = res_data["candidates"][0]["content"]["parts"][0]["text"]
             return {"result": text_result}
             
