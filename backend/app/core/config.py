@@ -16,3 +16,4 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # 4. Calculator Constants (Ito yung nagpa-crash ngayon)
 DEFAULT_EXCHANGE_RATE = float(os.getenv("DEFAULT_EXCHANGE_RATE", "56.00"))
 DEFAULT_VAT_RATE = float(os.getenv("DEFAULT_VAT_RATE", "0.12"))
+ALLOWED_ORIGINS = "https://your-app.vercel.app"
