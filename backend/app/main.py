@@ -12,13 +12,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(tariff.router, prefix="/api/tariff", tags=["Tariff"])
-app.include_router(calculator.router, prefix="/api/calculator", tags=["Calculator"])
-app.include_router(classifier.router, prefix="/api/classify", tags=["Classifier"])
-app.include_router(clients.router, prefix="/api/clients", tags=["Clients"])
-app.include_router(shipments.router, prefix="/api/shipments", tags=["Shipments"])
-app.include_router(entries.router, prefix="/api/entries", tags=["Entries"])
-app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])
+# Inadjust ang mga prefix para maglapat sa tinatawag ng frontend mo (tinanggal ang /api at itinama ang classifier)
+app.include_router(tariff.router, prefix="/tariff", tags=["Tariff"])
+app.include_router(calculator.router, prefix="/calculator", tags=["Calculator"])
+app.include_router(classifier.router, prefix="/classifier", tags=["Classifier"])
+app.include_router(clients.router, prefix="/clients", tags=["Clients"])
+app.include_router(shipments.router, prefix="/shipments", tags=["Shipments"])
+app.include_router(entries.router, prefix="/entries", tags=["Entries"])
+app.include_router(settings.router, prefix="/settings", tags=["Settings"])
 
 @app.get("/")
 def root():
