@@ -8,3 +8,4 @@ EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
 
 DEFAULT_VAT_RATE = float(os.getenv("DEFAULT_VAT_RATE", 12.0))
 DEFAULT_EXCHANGE_RATE = float(os.getenv("DEFAULT_EXCHANGE_RATE", 56.0))
+ALLOWED_ORIGINS = "https://your-app.vercel.app"
