@@ -8,10 +8,14 @@ router = APIRouter()
 class ClassifyInput(BaseModel):
     description: str
 
+# Sinalo lahat ng posibleng URL combinations para walang kawala ang frontend
+@router.post("")
 @router.post("/")
+@router.post("/classify")
 def classify(input: ClassifyInput):
-    if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "sk-ant-api03-..." :
+    if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "sk-ant-api03-...":
         raise HTTPException(503, "Anthropic API key not configured")
+    
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     try:
         resp = client.messages.create(
