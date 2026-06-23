@@ -17,8 +17,8 @@ def classify(input: ClassifyInput):
     if not gemini_key:
         raise HTTPException(503, "Gemini API key not configured in Render environment")
     
-    # Gagamit ng Gemini 1.5 Flash API endpoint
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+    # Itinama natin mula v1beta patungong v1 stable endpoint base sa nahanap mo!
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={gemini_key}"
     headers = {"Content-Type": "application/json"}
     
     prompt = f"Given the product description: '{input.description}', return the likely 8-digit AHTN HS code and a brief reason. Format exactly like this: code: XXXX.XX.XX, reason: ..."
@@ -42,7 +42,7 @@ def classify(input: ClassifyInput):
         with urllib.request.urlopen(req) as response:
             res_data = json.loads(response.read().decode('utf-8'))
             
-            # Paghukay sa structural response ng Gemini API
+            # Pagkuha ng text mula sa stable v1 structure
             text_result = res_data["candidates"][0]["content"]["parts"][0]["text"]
             return {"result": text_result}
             
