@@ -48,7 +48,7 @@ const CALC=['fob_value','freight','insurance','exchange_rate','duty_rate','vat_r
 const SEC={fontSize:'11px',fontWeight:700,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.07em',margin:'4px 0 8px'}
 
 export default function Entries({ setSharedData=()=>{}, setPage=()=>{} }) {
-  const [data,setData]=[useState([]),x=>setData_i(x)][0],setData_i=useState([])[1]
+  const [data, setData]          = useState([]) // FIXED STATE
   const [clients,setClients]     = useState([])
   const [shipments,setShipments] = useState([])
   const [form,setForm]           = useState(EMPTY)
@@ -59,7 +59,7 @@ export default function Entries({ setSharedData=()=>{}, setPage=()=>{} }) {
 
   const load = async () => {
     const [e,c,s] = await Promise.all([api.get('/entries').catch(()=>[]),api.get('/clients').catch(()=>[]),api.get('/shipments').catch(()=>[])])
-    setData_i(e); setClients(c); setShipments(s); setLoading(false)
+    setData(e); setClients(c); setShipments(s); setLoading(false) // FIXED RENDER UPDATE
   }
   useEffect(()=>{ load() },[])
 
