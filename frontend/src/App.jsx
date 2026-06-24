@@ -21,28 +21,29 @@ const NAV = [
   { id:'settings',   label:'Settings',           icon:'⚙️', g:'Account'      },
 ]
 const MNAV = [
-  { id:'hs-lookup',  label:'HS',       icon:'🔍' },
-  { id:'calculator', label:'Calc',     icon:'🧮' },
-  { id:'entries',    label:'Entries',  icon:'📄' },
-  { id:'assessment', label:'Builder',  icon:'📝' },
-  { id:'dashboard',  label:'Home',     icon:'◼'  },
+  { id:'hs-lookup',  label:'HS',      icon:'🔍' },
+  { id:'calculator', label:'Calc',    icon:'🧮' },
+  { id:'entries',    label:'Entries', icon:'📄' },
+  { id:'assessment', label:'Builder', icon:'📝' },
+  { id:'dashboard',  label:'Home',    icon:'◼'  },
 ]
-function Page({ p }) {
+function Page({ p, sharedData, setSharedData, setPage }) {
   if (p==='dashboard')  return <Dashboard/>
   if (p==='hs-lookup')  return <HSLookup/>
   if (p==='calculator') return <DutyCalculator/>
   if (p==='clients')    return <Clients/>
   if (p==='shipments')  return <Shipments/>
-  if (p==='entries')    return <Entries/>
-  if (p==='assessment') return <AssessmentNoticePrintable/>
+  if (p==='entries')    return <Entries setSharedData={setSharedData} setPage={setPage}/>
+  if (p==='assessment') return <AssessmentNoticePrintable sharedData={sharedData}/>
   if (p==='settings')   return <Settings/>
   return <Dashboard/>
 }
 export default function App() {
-  const [session,setSession] = useState(null)
-  const [loading,setLoading] = useState(true)
-  const [page,setPage]       = useState('hs-lookup')
-  const [theme,setTheme]     = useState(localStorage.getItem('ct-theme')||'dark')
+  const [session,setSession]       = useState(null)
+  const [loading,setLoading]       = useState(true)
+  const [page,setPage]             = useState('hs-lookup')
+  const [theme,setTheme]           = useState(localStorage.getItem('ct-theme')||'dark')
+  const [sharedData,setSharedData] = useState(null)
   useEffect(()=>{
     supabase.auth.getSession().then(({data:{session}})=>{setSession(session);setLoading(false)})
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_e,s)=>setSession(s))
@@ -83,7 +84,9 @@ export default function App() {
             <span style={{fontSize:'12px',color:'var(--text3)'}}>{session.user.email}</span>
           </div>
         </div>
-        <div className="page"><Page p={page}/></div>
+        <div className="page">
+          <Page p={page} sharedData={sharedData} setSharedData={setSharedData} setPage={setPage}/>
+        </div>
       </main>
       <nav className="mnav">
         <div className="mnav-items">
