@@ -1,33 +1,52 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
+import { calculateAssessment } from '../lib/ValuationEngine'
 
 const fmt = v => (v||0).toLocaleString('en-PH',{minimumFractionDigits:2})
 const pf  = (s,d=0) => parseFloat(s)||d
 
-function computeIPF(cif) {
-  if (cif<=250000) return 250; if (cif<=500000) return 500
-  if (cif<=1000000) return 1000; return 1500
-}
 const EMPTY = {
   shipment_id:'',client_id:'',entry_no:'',ahtn_code:'',description:'',quota_type:'',
   fob_value:'',freight:'0',insurance:'0',exchange_rate:'56',duty_rate:'',vat_rate:'12',
   aep:'1500',brokerage:'0',notes_text:'',cif_value:'0',customs_duty:'0',vat_base:'0',
   vat:'0',ipf:250,grand_total:'0'
 }
+
+// 🚀 GINAGAMIT NA NATIN ANG ENGINE DITO KAHIT SA TYPING PA LANG
 function calcAll(f) {
-  const cif_usd=pf(f.fob_value)+pf(f.freight)+pf(f.insurance)
-  const cif_php=cif_usd*pf(f.exchange_rate,56)
-  const duty=cif_php*(pf(f.duty_rate)/100), vat_base=cif_php+duty
-  const vat=vat_base*(pf(f.vat_rate,12)/100), ipf=computeIPF(cif_php)
-  const grand=duty+vat+ipf+pf(f.aep)+pf(f.brokerage)
-  return {cif_value:cif_php.toFixed(4),customs_duty:duty.toFixed(4),vat_base:vat_base.toFixed(4),vat:vat.toFixed(4),ipf,grand_total:grand.toFixed(4)}
+  try {
+    const res = calculateAssessment({
+      fob:          f.fob_value,
+      freight:      f.freight,
+      insurance:    f.insurance,
+      exchangeRate: f.exchange_rate,
+      tariffRate:   f.duty_rate,
+      aep:          f.aep,
+      brokerageFee: f.brokerage,
+      isExcise:     false // Simplified for entry list view
+    })
+    const b = res.breakdown
+    return {
+      cif_value:    String(b.cifPhpRaw),
+      customs_duty: String(b.duty),
+      vat_base:     String(b.vatBase),
+      vat:          String(b.vat),
+      ipf:          b.ipf,
+      grand_total:  String(b.grandTotal)
+    }
+  } catch (e) {
+    // Kung kulang pa tinatype ng user (ex. blank FOB), wag i-crash. Return 0.
+    return { cif_value:'0', customs_duty:'0', vat_base:'0', vat:'0', ipf:250, grand_total:'0' }
+  }
 }
+
 function toForm(e) {
   let aep=1500,brokerage=0,notes_text=''
   try { const p=JSON.parse(e.notes||'{}'); aep=p.aep??1500; brokerage=p.brokerage??0; notes_text=p.notes_text||'' } catch{ notes_text=e.notes||'' }
   const base={...e,aep:String(aep),brokerage:String(brokerage),notes_text,fob_value:String(e.fob_value||''),freight:String(e.freight||'0'),insurance:String(e.insurance||'0'),exchange_rate:String(e.exchange_rate||'56'),duty_rate:String(e.duty_rate||''),vat_rate:String(e.vat_rate||'12')}
   return {...base,...calcAll(base)}
 }
+
 function toAssessment(e) {
   return {
     entry_no:      e.entry_no      || '',
@@ -44,11 +63,12 @@ function toAssessment(e) {
     brokerage:     0,
   }
 }
-const CALC=['fob_value','freight','insurance','exchange_rate','duty_rate','vat_rate','aep','brokerage']
+
+const CALC=['fob_value','freight','insurance','exchange_rate','duty_rate','aep','brokerage']
 const SEC={fontSize:'11px',fontWeight:700,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.07em',margin:'4px 0 8px'}
 
 export default function Entries({ setSharedData=()=>{}, setPage=()=>{} }) {
-  const [data, setData]          = useState([]) // FIXED STATE
+  const [data, setData]          = useState([])
   const [clients,setClients]     = useState([])
   const [shipments,setShipments] = useState([])
   const [form,setForm]           = useState(EMPTY)
@@ -59,7 +79,7 @@ export default function Entries({ setSharedData=()=>{}, setPage=()=>{} }) {
 
   const load = async () => {
     const [e,c,s] = await Promise.all([api.get('/entries').catch(()=>[]),api.get('/clients').catch(()=>[]),api.get('/shipments').catch(()=>[])])
-    setData(e); setClients(c); setShipments(s); setLoading(false) // FIXED RENDER UPDATE
+    setData(e); setClients(c); setShipments(s); setLoading(false)
   }
   useEffect(()=>{ load() },[])
 
@@ -71,7 +91,7 @@ export default function Entries({ setSharedData=()=>{}, setPage=()=>{} }) {
   async function save() {
     setErr('')
     try {
-      const body={shipment_id:form.shipment_id||null,client_id:form.client_id||null,entry_no:form.entry_no,ahtn_code:form.ahtn_code,description:form.description,quota_type:form.quota_type||null,fob_value:pf(form.fob_value),freight:pf(form.freight),insurance:pf(form.insurance),cif_value:pf(form.cif_value),exchange_rate:pf(form.exchange_rate,56),duty_rate:pf(form.duty_rate),customs_duty:pf(form.customs_duty),vat_rate:pf(form.vat_rate,12),vat:pf(form.vat),total_payable:pf(form.grand_total),notes:JSON.stringify({aep:pf(form.aep),brokerage:pf(form.brokerage),notes_text:form.notes_text||''})}
+      const body={shipment_id:form.shipment_id||null,client_id:form.client_id||null,entry_no:form.entry_no,ahtn_code:form.ahtn_code,description:form.description,quota_type:form.quota_type||null,fob_value:pf(form.fob_value),freight:pf(form.freight),insurance:pf(form.insurance),cif_value:pf(form.cif_value),exchange_rate:pf(form.exchange_rate,56),duty_rate:pf(form.duty_rate),customs_duty:pf(form.customs_duty),vat_rate:12,vat:pf(form.vat),total_payable:pf(form.grand_total),notes:JSON.stringify({aep:pf(form.aep),brokerage:pf(form.brokerage),notes_text:form.notes_text||''})}
       edit ? await api.put(`/entries/${edit}`,body) : await api.post('/entries',body)
       setShow(false); load()
     } catch(e){ setErr(e.message||'Save failed') }
@@ -103,10 +123,10 @@ export default function Entries({ setSharedData=()=>{}, setPage=()=>{} }) {
             <div className="fg"><label className="fl">Insurance (USD)</label><input className="input" type="number" value={form.insurance} onChange={e=>setD('insurance',e.target.value)}/></div>
             <div className="fg"><label className="fl">Exchange Rate (₱)</label><input className="input" type="number" value={form.exchange_rate} onChange={e=>setD('exchange_rate',e.target.value)}/></div>
             <div className="fg"><label className="fl">Duty Rate (%)</label><input className="input" type="number" value={form.duty_rate||''} onChange={e=>setD('duty_rate',e.target.value)}/></div>
-            <div className="fg"><label className="fl">VAT Rate (%)</label><input className="input" type="number" value={form.vat_rate} onChange={e=>setD('vat_rate',e.target.value)}/></div>
+            <div className="fg"><label className="fl">AEP (₱)</label><input className="input" type="number" value={form.aep} onChange={e=>setD('aep',e.target.value)}/></div>
           </div>
           <div className="result-box" style={{marginBottom:'14px'}}>
-            <div className="result-row"><span>CIF (PHP)</span><span>₱{fmt(form.cif_value)}</span></div>
+            <div className="result-row"><span>CIF (PHP Raw)</span><span>₱{fmt(form.cif_value)}</span></div>
             <div className="result-row"><span>Customs Duty</span><span>₱{fmt(form.customs_duty)}</span></div>
             <div className="result-row"><span>VAT</span><span>₱{fmt(form.vat)}</span></div>
             <div className="result-row total"><span>GRAND TOTAL</span><span>₱{fmt(form.grand_total)}</span></div>
