@@ -1,10 +1,12 @@
+# Ignore dependencies
+node_modules/
 __pycache__/
-*.pyc
-*.pyo
+venv/
+
+# Ignore build files & logs
+dist/
+logs/
+
+# IGNORE SECRET KEYS (SUPER IMPORTANT)
 .env
 .env.local
-node_modules/
-dist/
-.DS_Store
-*.egg-info/
-.pytest_cache/

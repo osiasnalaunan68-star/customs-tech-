@@ -83,19 +83,3 @@ export function useAssessmentPersistence({ formState, company, sub }) {
 
   return { record, saving, error, toast, saveDraft, submitForReview, loadAssessment }
 }
-/*
-USAGE IN AssessmentNoticePrintable.jsx — add these lines:
-
-  import { useAssessmentPersistence } from '../hooks/useAssessmentPersistence'
-  const { record, saving, toast, saveDraft, submitForReview } =
-    useAssessmentPersistence({ formState: f, company, sub })
-
-  Add in editor column before print button:
-  {toast && <div className={toast.type==='err'?'err':'ok'} style={{marginBottom:'8px'}}>{toast.msg}</div>}
-  <button onClick={()=>saveDraft()} disabled={saving} style={{...navyBtnStyle}}>
-    {saving?'Saving…':`💾 Save Draft${record?` (${record.acn})`:''}`}
-  </button>
-  <button onClick={submitForReview} disabled={saving||record?.status!=='draft'} style={{...greenBtnStyle}}>
-    📤 Submit for Review
-  </button>
-*/

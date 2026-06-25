@@ -92,6 +92,7 @@ export function generateAssessmentPDF(a) {
       1:{halign:'right',fillColor:[239,246,255],textColor:[30,64,175]},
     }, theme:'grid',
   }); y = doc.lastAutoTable.finalY+4
+
   const exempt = a.is_de_minimis
   y = secHdr(doc,'IV.  TAX COMPUTATION — RA 10863 / TRAIN Law (RA 10963)',y,W)
   autoTable(doc,{

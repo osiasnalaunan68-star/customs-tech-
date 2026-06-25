@@ -3,7 +3,6 @@ import { assessmentApi } from '../lib/assessmentApi'
 import { generateAssessmentPDF } from '../utils/pdfGenerator'
 
 const fmt = n => (n||0).toLocaleString('en-PH',{minimumFractionDigits:2})
-
 const SC = {
   draft:        {bg:'#f1f5f9',color:'#475569'},
   submitted:    {bg:'#dbeafe',color:'#1e40af'},
@@ -117,6 +116,7 @@ export default function AssessmentDashboard({ onOpen }) {
           </div>
         </div>
       )}
+
       {loading?(
         <div className="loading"><div className="spin"/></div>
       ):data.length===0?(

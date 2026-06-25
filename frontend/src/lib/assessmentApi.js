@@ -1,7 +1,5 @@
 import { supabase } from './supabase'
-
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-
 async function req(path, opts = {}) {
   const { data: { session } } = await supabase.auth.getSession()
   const token = session?.access_token
@@ -17,7 +15,6 @@ async function req(path, opts = {}) {
   if (res.status === 204) return null
   return res.json()
 }
-
 export const assessmentApi = {
   list: (p = {}) => {
     const q = new URLSearchParams()
