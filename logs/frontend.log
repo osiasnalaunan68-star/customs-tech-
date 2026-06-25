@@ -1,0 +1,7 @@
+::1 - - [25/Jun/2026 20:14:09] "GET / HTTP/1.1" 200 -
+::1 - - [25/Jun/2026 20:14:22] "GET / HTTP/1.1" 200 -
+::1 - - [25/Jun/2026 20:14:22] "GET /assets/index-B30KaqnX.css HTTP/1.1" 200 -
+::1 - - [25/Jun/2026 20:14:22] "GET /assets/index-CtCsJIeZ.js HTTP/1.1" 200 -
+::1 - - [25/Jun/2026 20:14:24] code 404, message File not found
+::1 - - [25/Jun/2026 20:14:24] "GET /favicon.ico HTTP/1.1" 404 -
+::1 - - [25/Jun/2026 20:14:35] "GET / HTTP/1.1" 304 -

@@ -2,7 +2,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, Request, Response
-from app.routers import tariff, calculator, clients, shipments, entries, settings
+from app.routers import tariff, assessments, calculator, clients, shipments, entries, settings
 
 app = FastAPI(title="Customs Tech by Osias.org", version="1.0.0")
 
@@ -31,6 +31,7 @@ async def master_cors_middleware(request: Request, call_next):
         response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
+app.include_router(assessments.router, prefix="/api/assessments", tags=["Assessments"])
 app.include_router(tariff.router,     prefix="/api/tariff",     tags=["Tariff"])
 app.include_router(calculator.router, prefix="/api/calculator", tags=["Calculator"])
 app.include_router(clients.router,    prefix="/api/clients",    tags=["Clients"])
