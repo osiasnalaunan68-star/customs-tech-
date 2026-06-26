@@ -1,0 +1,1316 @@
+-e 
+
+========== backend/app/routers/__init__.py ==========
+
+from . import tariff, calculator, classifier, clients, shipments, entries, settings
+-e 
+
+========== backend/app/routers/tariff.py ==========
+
+from fastapi import APIRouter, Query, HTTPException
+from typing import Optional
+from app.core.database import get_admin
+
+router = APIRouter()
+
+@router.get("/chapters")
+def list_chapters():
+    sb = get_admin()
+    return sb.table('tariff_chapters').select(
+        'chapter_no,chapter_title,section_no,section_title'
+    ).order('chapter_no').execute().data
+
+@router.get("/codes")
+def search_codes(
+    q: Optional[str] = Query(None),
+    code_prefix: Optional[str] = Query(None),
+    chapter: Optional[int] = Query(None),
+    code: Optional[str] = Query(None),
+    year: int = Query(2026),
+    limit: int = Query(50, le=200),
+):
+    sb = get_admin()
+    query = sb.table('hs_codes').select(
+        'id,ahtn_code,description,indent_level,is_quota,quota_type,chapter_no,footnote'
+    )
+    if chapter:
+        query = query.eq('chapter_no', chapter)
+    if code:
+        query = query.eq('ahtn_code', code)
+    elif code_prefix:
+        query = query.like('ahtn_code', f'{code_prefix}%')
+    elif q:
+        query = query.ilike('description', f'%{q}%')
+    res = query.order('ahtn_code').limit(limit).execute()
+    if not res.data:
+        return []
+    ids = [r['id'] for r in res.data]
+    rr = sb.table('tariff_rates').select('hs_code_id,rate').in_(
+        'hs_code_id', ids).eq('year', year).execute()
+    rm = {r['hs_code_id']: r['rate'] for r in rr.data}
+    return [{**item, 'rate': rm.get(item['id']), 'year': year} for item in res.data]
+
+@router.get("/code/{ahtn_code}")
+def get_code(ahtn_code: str):
+    sb = get_admin()
+    res = sb.table('hs_codes').select('*,tariff_rates(year,rate)').eq(
+        'ahtn_code', ahtn_code).execute()
+    if not res.data:
+        raise HTTPException(404, "HS code not found")
+    return res.data[0]
+
+@router.get("/footnote/{code}")
+def get_footnote(code: str):
+    sb = get_admin()
+    res = sb.table('tariff_footnotes').select('*').eq('code', code).execute()
+    return res.data[0] if res.data else {"error": "Not found"}
+-e 
+
+========== backend/app/routers/calculator.py ==========
+
+from fastapi import APIRouter
+from pydantic import BaseModel
+from typing import Optional
+import httpx
+from app.core.config import EXCHANGE_RATE_API_KEY, DEFAULT_EXCHANGE_RATE, DEFAULT_VAT_RATE
+
+router = APIRouter()
+
+class DutyInput(BaseModel):
+    fob: float
+    freight: float = 0.0
+    insurance: float = 0.0
+    exchange_rate: Optional[float] = None
+    duty_rate: float
+    vat_rate: float = DEFAULT_VAT_RATE
+
+@router.post("/duty")
+def calculate_duty(body: DutyInput):
+    exr = body.exchange_rate or DEFAULT_EXCHANGE_RATE
+    cif_usd = body.fob + body.freight + body.insurance
+    cif_php = cif_usd * exr
+    duty = cif_php * (body.duty_rate / 100)
+    vat = (cif_php + duty) * (body.vat_rate / 100)
+    return {
+        "fob_usd": body.fob, "freight_usd": body.freight,
+        "insurance_usd": body.insurance, "cif_usd": round(cif_usd, 4),
+        "exchange_rate": exr, "cif_php": round(cif_php, 2),
+        "duty_rate_pct": body.duty_rate, "customs_duty": round(duty, 2),
+        "vat_rate_pct": body.vat_rate, "vat_base": round(cif_php + duty, 2),
+        "vat": round(vat, 2), "total_payable": round(duty + vat, 2),
+    }
+
+@router.get("/exchange-rate")
+async def get_rate():
+    k = EXCHANGE_RATE_API_KEY
+    if not k or k == "YOUR_NINJA_API_KEY":
+        return {"rate": DEFAULT_EXCHANGE_RATE, "source": "default"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get("https://api.api-ninjas.com/v1/exchangerate?pair=USD_PHP",
+                            headers={"X-Api-Key": k})
+            return {"rate": r.json().get("exchange_rate", DEFAULT_EXCHANGE_RATE), "source": "live"}
+    except Exception:
+        return {"rate": DEFAULT_EXCHANGE_RATE, "source": "fallback"}
+-e 
+
+========== backend/app/routers/classifier.py ==========
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+import os
+import json
+import urllib.request
+import urllib.error
+
+router = APIRouter()
+
+class ClassifyInput(BaseModel):
+    description: str
+
+@router.post("")
+@router.post("/")
+@router.post("/classify")
+def classify(input: ClassifyInput):
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        raise HTTPException(503, "Gemini API key not configured in Render environment")
+    
+    # Listahan ng mga models na pwedeng sumalo sa request mo
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-2.0-flash"
+    ]
+    
+    last_error = None
+    prompt = f"Given the product description: '{input.description}', return the likely 8-digit AHTN HS code and a brief reason. Format exactly like this: code: XXXX.XX.XX, reason: ..."
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+    headers = {"Content-Type": "application/json"}
+
+    # Iikutin natin ang mga models hanggang sa may gumana
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={gemini_key}"
+        try:
+            req = urllib.request.Request(
+                url, 
+                data=json.dumps(payload).encode('utf-8'), 
+                headers=headers, 
+                method="POST"
+            )
+            with urllib.request.urlopen(req) as response:
+                res_data = json.loads(response.read().decode('utf-8'))
+                text_result = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                # Kapag may gumana, ibalik agad ang resulta!
+                return {"result": text_result}
+                
+        except urllib.error.HTTPError as e:
+            last_error = e.read().decode('utf-8')
+            # Kung 404 (Model Not Found), ituloy lang ang loop sa susunod na model name
+            if e.code == 404:
+                continue
+            # Kung ibang klaseng error (hal. 400 o 403), i-bato agad sa frontend
+            raise HTTPException(e.code, f"Gemini API Error: {last_error}")
+        except Exception as e:
+            raise HTTPException(500, str(e))
+            
+    # Kung natapos ang loop at lahat sila nag-404
+    raise HTTPException(404, f"All Gemini model variants failed. Last Google error: {last_error}")
+-e 
+
+========== backend/app/routers/clients.py ==========
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import List, Optional
+
+from fastapi import APIRouter, HTTPException
+
+from app.core.database import supabase
+from app.schemas import ClientCreate, ClientResponse
+
+router = APIRouter()
+
+
+def _is_expiring_soon(cprs_expiry: Optional[str]) -> bool:
+    """True if CPRS expiry is within the next 30 calendar days."""
+    if not cprs_expiry:
+        return False
+    try:
+        expiry_date = date.fromisoformat(str(cprs_expiry))
+        today = date.today()
+        return today <= expiry_date <= today + timedelta(days=30)
+    except (ValueError, TypeError):
+        return False
+
+
+def _enrich(client: dict) -> dict:
+    client["cprs_expiring_soon"] = _is_expiring_soon(client.get("cprs_expiry"))
+    return client
+
+
+@router.get("/", response_model=List[ClientResponse])
+async def list_clients():
+    """Return all clients, newest first, with 30-day CPRS expiry warning."""
+    try:
+        res = (
+            supabase
+            .table("clients")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    return [_enrich(c) for c in (res.data or [])]
+
+
+@router.post("/", response_model=ClientResponse, status_code=201)
+async def create_client(client: ClientCreate):
+    """Insert a new client."""
+    payload = client.model_dump()
+
+    if payload.get("cprs_expiry") is not None:
+        payload["cprs_expiry"] = payload["cprs_expiry"].isoformat()
+
+    allowed_statuses = {"Active", "Expired", "Suspended"}
+    if payload.get("cprs_status") not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"cprs_status must be one of: {', '.join(allowed_statuses)}"
+        )
+
+    try:
+        res = supabase.table("clients").insert(payload).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Insert returned no data.")
+
+    return _enrich(res.data[0])
+-e 
+
+========== backend/app/routers/entries.py ==========
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime, timezone
+from app.core.database import get_admin
+from app.core.auth import current_user
+
+router = APIRouter()
+
+class EntryBody(BaseModel):
+    shipment_id: Optional[str] = None
+    client_id: Optional[str] = None
+    entry_no: Optional[str] = None
+    ahtn_code: Optional[str] = None
+    description: Optional[str] = None
+    quota_type: Optional[str] = None
+    fob_value: float = 0
+    freight: float = 0
+    insurance: float = 0
+    cif_value: float = 0
+    exchange_rate: float = 56.0
+    duty_rate: float = 0
+    customs_duty: float = 0
+    vat_rate: float = 12
+    vat: float = 0
+    total_payable: float = 0
+    notes: Optional[str] = None
+
+@router.get("")
+def list_entries(uid: str = Depends(current_user)):
+    sb = get_admin()
+    return sb.table('entries').select('*,clients(name),shipments(reference_no)').eq(
+        'user_id', uid).is_('deleted_at', 'null').order('created_at', desc=True).execute().data
+
+@router.post("")
+def create_entry(body: EntryBody, uid: str = Depends(current_user)):
+    sb = get_admin()
+    return sb.table('entries').insert({**body.model_dump(), 'user_id': uid}).execute().data[0]
+
+@router.put("/{eid}")
+def update_entry(eid: str, body: EntryBody, uid: str = Depends(current_user)):
+    sb = get_admin()
+    res = sb.table('entries').update(body.model_dump()).eq('id', eid).eq('user_id', uid).execute()
+    if not res.data: raise HTTPException(404, "Not found")
+    return res.data[0]
+
+@router.delete("/{eid}")
+def delete_entry(eid: str, uid: str = Depends(current_user)):
+    sb = get_admin()
+    sb.table('entries').update({'deleted_at': datetime.now(timezone.utc).isoformat()}).eq(
+        'id', eid).eq('user_id', uid).execute()
+    return {"deleted": True}
+-e 
+
+========== backend/app/routers/settings.py ==========
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException
+
+from app.core.database import supabase
+from app.schemas import GlobalSettingsUpdate, GlobalSettingsResponse
+
+router = APIRouter()
+
+_SETTINGS_ID = 1  # singleton row — id is always 1
+
+
+def _fetch() -> dict:
+    """Fetch the singleton settings row or raise 404."""
+    res = (
+        supabase
+        .table("global_settings")
+        .select("*")
+        .eq("id", _SETTINGS_ID)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Settings row missing. Run the SQL migration in Supabase first."
+        )
+    return res.data[0]
+
+
+@router.get("/", response_model=GlobalSettingsResponse)
+async def get_settings():
+    """Return the single global configuration row."""
+    try:
+        return _fetch()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+
+@router.put("/", response_model=GlobalSettingsResponse)
+async def update_settings(body: GlobalSettingsUpdate):
+    """
+    Partial update — only fields explicitly provided are written.
+    Omitted fields are left unchanged in the database.
+    """
+    payload = body.model_dump(exclude_none=True)
+
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail="No updatable fields were provided in the request body."
+        )
+
+    payload["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+
+    try:
+        res = (
+            supabase
+            .table("global_settings")
+            .update(payload)
+            .eq("id", _SETTINGS_ID)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Settings row not found.")
+
+    return res.data[0]
+
+
+@router.post("/", response_model=GlobalSettingsResponse)
+async def upsert_settings(body: GlobalSettingsUpdate):
+    """
+    Full upsert — safe to call even if the row somehow got deleted.
+    Sends all fields at once (used by the Settings page Save button).
+    """
+    payload = body.model_dump(exclude_none=True)
+    payload["id"] = _SETTINGS_ID
+    payload["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+
+    try:
+        res = (
+            supabase
+            .table("global_settings")
+            .upsert(payload, on_conflict="id")
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Upsert returned no data.")
+
+    return res.data[0]
+-e 
+
+========== backend/app/routers/shipments.py ==========
+
+from __future__ import annotations
+
+from typing import List
+
+from fastapi import APIRouter, HTTPException
+
+from app.core.database import supabase
+from app.schemas import (
+    ShipmentCreate,
+    ShipmentResponse,
+    ShipmentStatusUpdate,
+    OPERATIONAL_STATUSES,
+)
+
+router = APIRouter()
+
+
+@router.get("/", response_model=List[ShipmentResponse])
+async def list_shipments():
+    """Return all shipments, newest first."""
+    try:
+        res = (
+            supabase
+            .table("shipments")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    return res.data or []
+
+
+@router.post("/", response_model=ShipmentResponse, status_code=201)
+async def create_shipment(shipment: ShipmentCreate):
+    """Create a new shipment record."""
+    payload = shipment.model_dump()
+
+    if payload.get("eta") is not None:
+        payload["eta"] = payload["eta"].isoformat()
+
+    if payload.get("operational_status") not in OPERATIONAL_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"operational_status must be one of: {', '.join(OPERATIONAL_STATUSES)}"
+        )
+
+    try:
+        res = supabase.table("shipments").insert(payload).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Insert returned no data.")
+
+    return res.data[0]
+
+
+@router.put("/{shipment_id}/status", response_model=ShipmentResponse)
+async def update_shipment_status(shipment_id: str, body: ShipmentStatusUpdate):
+    """
+    Update only the operational_status of a shipment.
+    Pipeline: Documents Received → Entry Lodgement → Assessment/Payment
+              → Gatepass Released → Delivered
+    """
+    if body.operational_status not in OPERATIONAL_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid status '{body.operational_status}'. "
+                f"Allowed: {', '.join(OPERATIONAL_STATUSES)}"
+            ),
+        )
+
+    try:
+        res = (
+            supabase
+            .table("shipments")
+            .update({"operational_status": body.operational_status})
+            .eq("id", shipment_id)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    if not res.data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Shipment '{shipment_id}' not found."
+        )
+
+    return res.data[0]
+-e 
+
+========== backend/app/routers/assessments.py ==========
+
+"""
+routers/assessments.py
+Assessment CRUD, submission workflow, and approval chain.
+All monetary inputs/outputs are pre-computed by ValuationEngine.js
+on the frontend — this API persists, validates transitions, and logs.
+"""
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime, timezone
+from app.core.database import get_admin
+from app.core.auth import current_user
+
+router = APIRouter()
+
+# ── MODELS ────────────────────────────────────────────────────────
+
+class _Header(BaseModel):
+    """Shared document header fields — mixin for Create and Update."""
+    client_id:      Optional[str] = None
+    shipment_id:    Optional[str] = None
+    entry_id:       Optional[str] = None
+    entry_no:       Optional[str] = None
+    bl_number:      Optional[str] = None
+    invoice_no:     Optional[str] = None
+    container_no:   Optional[str] = None
+    incoterms:      Optional[str] = "CIF"
+    commodity:      Optional[str] = None
+    ahtn_code:      Optional[str] = None
+    origin_country: Optional[str] = None
+    port_of_entry:  Optional[str] = "Manila"
+    importer:       Optional[str] = None
+    consignee:      Optional[str] = None
+    declarant_name: Optional[str] = None
+    broker_tin:     Optional[str] = None
+    prc_license_no: Optional[str] = None
+    company_name:   Optional[str] = None
+    company_sub:    Optional[str] = None
+
+class AssessmentCreate(_Header):
+    inputs:         dict
+    outputs:        dict
+    is_de_minimis:  bool           = False
+    engine_version: str            = "1.0.0"
+    warnings:       Optional[list] = None
+
+class AssessmentUpdate(_Header):
+    inputs:        Optional[dict] = None
+    outputs:       Optional[dict] = None
+    is_de_minimis: Optional[bool] = None
+    warnings:      Optional[list] = None
+    revision_note: Optional[str]  = None
+
+class WorkflowBody(BaseModel):
+    action: str            # check | reject | approve | cancel
+    notes: Optional[str] = None
+
+# ── HELPERS ───────────────────────────────────────────────────────
+
+def _mirrors(inputs: dict, outputs: dict) -> dict:
+    """
+    Map ValuationEngine JSONB payloads to indexed numeric mirror columns.
+    These columns exist purely for query performance — outputs JSONB
+    remains the authoritative source of truth.
+    """
+    return {
+        "dv_pesos":       outputs.get("dvPesos"),
+        "cif_php":        outputs.get("cifPhpRaw"),
+        "customs_duty":   outputs.get("duty"),
+        "excise_tax_php": outputs.get("exciseTax"),
+        "vat_php":        outputs.get("vat"),
+        "total_payable":  outputs.get("grandTotal"),
+        "exchange_rate":  inputs.get("exchangeRate"),
+        "tariff_rate":    inputs.get("tariffRate"),
+    }
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def _log(sb, *, aid: str, action: str, from_status,
+         to_status: str, version: int, acn: str,
+         actor: str, notes: Optional[str] = None) -> None:
+    """Append one row to the immutable workflow log."""
+    sb.table("assessment_workflow_log").insert({
+        "assessment_id": aid,
+        "action":        action,
+        "from_status":   from_status,
+        "to_status":     to_status,
+        "version_at":    version,
+        "acn_snapshot":  acn,
+        "actor_id":      actor,
+        "notes":         notes,
+        "acted_at":      _now(),
+    }).execute()
+
+def _get_or_404(sb, id: str) -> dict:
+    r = sb.table("assessments").select("*").eq("id", id).is_("deleted_at", "null").execute()
+    if not r.data:
+        raise HTTPException(404, f"Assessment '{id}' not found or has been deleted.")
+    return r.data[0]
+
+def _assert_status(rec: dict, expected: str, operation: str) -> None:
+    if rec["status"] != expected:
+        raise HTTPException(409,
+            f"'{operation}' requires status='{expected}', "
+            f"but current status is '{rec['status']}'.")
+
+# State machine: action → (required_from_status | None, to_status, log_action)
+# None as required_from means the check is skipped (admin cancel from any state).
+_TRANSITIONS: dict[str, tuple] = {
+    "check":   ("submitted",    "under_review", "checked"),
+    "reject":  ("under_review", "draft",        "rejected"),
+    "approve": ("under_review", "approved",     "approved"),
+    "cancel":  (None,           "cancelled",    "cancelled"),
+}
+
+# ── GET: LIST ─────────────────────────────────────────────────────
+
+@router.get("")
+@router.get("/")
+def list_assessments(
+    status:  Optional[str] = Query(None, description="Filter by workflow status"),
+    limit:   int            = Query(50, le=200),
+    offset:  int            = Query(0),
+    uid: str = Depends(current_user),
+):
+    """
+    List active assessments via the assessment_summary view.
+    The view resolves UUID references to human-readable names and
+    computes revision_count without requiring a client-side join.
+    """
+    sb  = get_admin()
+    q   = sb.table("assessment_summary").select("*")
+    if status:
+        q = q.eq("status", status)
+    res = q.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+    return {"data": res.data, "count": len(res.data), "offset": offset}
+
+# ── GET: DETAIL ───────────────────────────────────────────────────
+
+@router.get("/{id}")
+def get_assessment(id: str, uid: str = Depends(current_user)):
+    """
+    Full assessment record with revision history and workflow audit trail.
+    Snapshot columns in revisions are excluded from the list query for
+    performance — consumer fetches full snapshot only when needed.
+    """
+    sb   = get_admin()
+    rec  = _get_or_404(sb, id)
+    revs = sb.table("assessment_revisions") \
+             .select("id,version,status,changed_fields,revision_note,revised_by,revised_at") \
+             .eq("assessment_id", id) \
+             .order("revised_at", desc=True) \
+             .execute()
+    logs = sb.table("assessment_workflow_log") \
+             .select("*") \
+             .eq("assessment_id", id) \
+             .order("acted_at", desc=True) \
+             .execute()
+    return {**rec, "revisions": revs.data, "workflow_log": logs.data}
+
+# ── POST: CREATE DRAFT ────────────────────────────────────────────
+
+@router.post("", status_code=201)
+@router.post("/", status_code=201)
+def create_assessment(body: AssessmentCreate, uid: str = Depends(current_user)):
+    """
+    Persist a new assessment as status='draft'.
+    Expects fully computed inputs and outputs from ValuationEngine.js.
+    Numeric mirror columns are extracted from the outputs payload and
+    written simultaneously — both JSONB truth and indexed mirrors
+    are always in sync at creation.
+    Appends a 'created' action to the workflow log.
+    """
+    sb  = get_admin()
+    now = _now()
+    row = {
+        **body.model_dump(),
+        **_mirrors(body.inputs, body.outputs),
+        "status":      "draft",
+        "created_by":  uid,
+        "prepared_by": uid,
+        "prepared_at": now,
+        "created_at":  now,
+        "updated_at":  now,
+    }
+    # revision_note is an API-only field — not a DB column
+    row.pop("revision_note", None)
+
+    res = sb.table("assessments").insert(row).execute()
+    if not res.data:
+        raise HTTPException(500, "Failed to create assessment — no data returned.")
+
+    rec = res.data[0]
+    _log(sb, aid=rec["id"], action="created", from_status=None,
+         to_status="draft", version=rec["version"],
+         acn=rec["acn"], actor=uid)
+    return rec
+
+# ── PUT: UPDATE DRAFT ─────────────────────────────────────────────
+
+@router.put("/{id}")
+def update_assessment(id: str, body: AssessmentUpdate, uid: str = Depends(current_user)):
+    """
+    Update an assessment that is in 'draft' or 'rejected' status.
+    Rejected assessments return to draft state for correction, so
+    both statuses are treated as editable.
+    The DB trigger (capture_assessment_revision — SECURITY DEFINER)
+    automatically snapshots the pre-update row into assessment_revisions
+    before the UPDATE lands — no manual revision logic required here.
+    Appends a 'revision_saved' action to the workflow log.
+    """
+    sb  = get_admin()
+    cur = _get_or_404(sb, id)
+
+    if cur["status"] not in ("draft", "rejected"):
+        raise HTTPException(409,
+            f"Cannot edit — status is '{cur['status']}'. "
+            f"Only 'draft' and 'rejected' assessments are editable.")
+
+    note = body.revision_note
+    upd  = body.model_dump(exclude_none=True, exclude={"revision_note"})
+
+    # Rebuild numeric mirrors if either inputs or outputs changed
+    if body.inputs is not None or body.outputs is not None:
+        inp = body.inputs  or cur.get("inputs",  {})
+        out = body.outputs or cur.get("outputs", {})
+        upd.update(_mirrors(inp, out))
+
+    upd["updated_at"] = _now()
+
+    res = sb.table("assessments").update(upd).eq("id", id).execute()
+    if not res.data:
+        raise HTTPException(500, "Update failed — no data returned.")
+
+    _log(sb, aid=id, action="revision_saved",
+         from_status=cur["status"], to_status=cur["status"],
+         version=cur["version"], acn=cur["acn"],
+         actor=uid, notes=note)
+    return res.data[0]
+
+# ── POST: SUBMIT FOR REVIEW ───────────────────────────────────────
+
+@router.post("/{id}/submit")
+def submit_assessment(id: str, uid: str = Depends(current_user)):
+    """
+    Advance status from 'draft' → 'submitted'.
+    Locks the document from further encoder edits (RLS blocks subsequent
+    encoder UPDATEs once status leaves 'draft').
+    Sets submitted_at timestamp.
+    Appends a 'submitted' action to the workflow log.
+    """
+    sb  = get_admin()
+    cur = _get_or_404(sb, id)
+    _assert_status(cur, "draft", "submit")
+
+    now = _now()
+    res = sb.table("assessments").update({
+        "status":       "submitted",
+        "submitted_at": now,
+        "updated_at":   now,
+    }).eq("id", id).execute()
+
+    if not res.data:
+        raise HTTPException(500, "Submit failed — no data returned.")
+
+    _log(sb, aid=id, action="submitted", from_status="draft",
+         to_status="submitted", version=cur["version"],
+         acn=cur["acn"], actor=uid)
+    return res.data[0]
+
+# ── POST: WORKFLOW ACTION (check / reject / approve / cancel) ─────
+
+@router.post("/{id}/workflow")
+def workflow_action(id: str, body: WorkflowBody, uid: str = Depends(current_user)):
+    """
+    Enforce document lifecycle transitions via the state machine.
+
+    Transitions:
+      check   : submitted    → under_review  | sets checked_by / checked_at
+      reject  : under_review → draft         | requires notes; sets rejected_by / rejection_notes
+      approve : under_review → approved      | sets approved_by; increments version
+      cancel  : any          → cancelled     | sets cancelled_at; admin use only
+
+    Each action appends exactly one row to assessment_workflow_log.
+    The DB trigger captures a revision snapshot automatically.
+
+    version increment on approve:
+      Signals the document reached a terminal-positive state.
+      Downstream consumers can use version > 1 as "has been approved before".
+    """
+    sb  = get_admin()
+    cur = _get_or_404(sb, id)
+
+    if body.action not in _TRANSITIONS:
+        raise HTTPException(400,
+            f"Unknown action '{body.action}'. "
+            f"Valid actions: {sorted(_TRANSITIONS.keys())}")
+
+    req_from, to_status, log_action = _TRANSITIONS[body.action]
+
+    # Validate current status against required precondition
+    if req_from is not None and cur["status"] != req_from:
+        raise HTTPException(409,
+            f"Action '{body.action}' requires status='{req_from}', "
+            f"but current status is '{cur['status']}'.")
+
+    # Rejection requires an explanation — enforced before any DB write
+    if body.action == "reject" and not body.notes:
+        raise HTTPException(422,
+            "notes are required when rejecting. "
+            "Provide the reason so the encoder can correct and resubmit.")
+
+    now = _now()
+    upd: dict = {"status": to_status, "updated_at": now}
+
+    if body.action == "check":
+        upd["checked_by"] = uid
+        upd["checked_at"] = now
+
+    elif body.action == "reject":
+        upd["rejected_by"]     = uid
+        upd["rejected_at"]     = now
+        upd["rejection_notes"] = body.notes
+        # status → 'draft' (back to encoder for correction)
+        # workflow log records the 'rejected' action transparently
+
+    elif body.action == "approve":
+        upd["approved_by"] = uid
+        upd["approved_at"] = now
+        # Increment version: signals this revision received formal approval.
+        # The pre-approve snapshot is already captured by the DB trigger.
+        upd["version"] = cur["version"] + 1
+
+    elif body.action == "cancel":
+        upd["cancelled_at"] = now
+
+    res = sb.table("assessments").update(upd).eq("id", id).execute()
+    if not res.data:
+        raise HTTPException(500, f"Workflow action '{body.action}' failed — no data returned.")
+
+    _log(sb, aid=id, action=log_action,
+         from_status=cur["status"], to_status=to_status,
+         version=cur["version"], acn=cur["acn"],
+         actor=uid, notes=body.notes)
+    return res.data[0]
+
+# ── DELETE: SOFT DELETE ───────────────────────────────────────────
+
+@router.delete("/{id}", status_code=204)
+def soft_delete_assessment(id: str, uid: str = Depends(current_user)):
+    """
+    Soft-delete by setting deleted_at = NOW().
+    Record is excluded from all SELECT policies (deleted_at IS NULL filter).
+    Hard DELETE is intentionally not exposed — admin must use SQL directly.
+    """
+    sb  = get_admin()
+    cur = _get_or_404(sb, id)
+    sb.table("assessments").update({
+        "deleted_at": _now(),
+        "updated_at": _now(),
+    }).eq("id", id).execute()
+    _log(sb, aid=id, action="cancelled",
+         from_status=cur["status"], to_status="cancelled",
+         version=cur["version"], acn=cur["acn"], actor=uid,
+         notes="soft-deleted")
+    return None
+-e 
+
+========== backend/app/routers/historical_sad.py ==========
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+from fastapi import APIRouter, HTTPException, Query
+
+from app.core.database import supabase
+from app.schemas import HistoricalSADCreate, HistoricalSADResponse
+
+router = APIRouter()
+
+
+@router.get("/", response_model=List[HistoricalSADResponse])
+async def list_historical_sad(
+    year: Optional[int] = Query(
+        default=None,
+        description="Filter archived entries by SAD year, e.g. ?year=2023"
+    )
+):
+    """Return archived SAD entries. Optionally filter by ?year=YYYY."""
+    try:
+        query = supabase.table("historical_sad").select("*")
+        if year is not None:
+            query = query.eq("sad_year", year)
+        res = query.order("archived_at", desc=True).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    return res.data or []
+
+
+@router.post("/", response_model=HistoricalSADResponse, status_code=201)
+async def archive_sad_entry(entry: HistoricalSADCreate):
+    """
+    Archive a completed SAD entry.
+    archived_at is auto-set by the database DEFAULT (NOW()).
+    """
+    payload = entry.model_dump()
+
+    try:
+        res = supabase.table("historical_sad").insert(payload).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Insert returned no data.")
+
+    return res.data[0]
+-e 
+
+========== backend/app/core/config.py ==========
+
+import os
+
+# 1. Supabase Credentials
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://isiwsanzcbtoihelnpue.supabase.co")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+
+# 2. CORS & Network
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://your-app.vercel.app,http://localhost:5173")
+
+# 3. API Keys (Isinama na natin para hindi mag-error ang classifier)
+EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# 4. Calculator Constants (Ito yung nagpa-crash ngayon)
+DEFAULT_EXCHANGE_RATE = float(os.getenv("DEFAULT_EXCHANGE_RATE", "56.00"))
+DEFAULT_VAT_RATE = float(os.getenv("DEFAULT_VAT_RATE", "0.12"))
+ALLOWED_ORIGINS = "https://your-app.vercel.app"
+-e 
+
+========== backend/app/core/__init__.py ==========
+
+-e 
+
+========== backend/app/core/database.py ==========
+
+from supabase import create_client
+from app.core.config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY
+
+def get_db():
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+def get_admin():
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+-e 
+
+========== backend/app/core/auth.py ==========
+
+from fastapi import Header, HTTPException
+from app.core.database import get_admin
+
+async def current_user(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Not authenticated")
+    try:
+        sb = get_admin()
+        user = sb.auth.get_user(authorization.split(" ")[1])
+        return str(user.user.id)
+    except Exception:
+        raise HTTPException(401, "Invalid token")
+-e 
+
+========== backend/app/services/__init__.py ==========
+
+-e 
+
+========== backend/app/__init__.py ==========
+
+-e 
+
+========== backend/app/main.py ==========
+
+import sys, os
+sys.path.insert(0, os.path.dirname(__file__))
+
+from fastapi import FastAPI, Request, Response
+from app.routers import tariff, assessments, calculator, clients, shipments, entries, settings, historical_sad
+
+app = FastAPI(title="Customs Tech by Osias.org", version="1.0.0")
+
+# MASTER CORS INTERCEPTOR: Sasaluhin lahat bago pa mag-error ang FastAPI
+@app.middleware("http")
+async def master_cors_middleware(request: Request, call_next):
+    # Kung OPTIONS request (Preflight), unahan na natin at mag-return agad ng 200 OK
+    if request.method == "OPTIONS":
+        response = Response(status_code=200)
+        origin = request.headers.get("Origin", "*")
+        req_headers = request.headers.get("Access-Control-Request-Headers", "*")
+        
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = req_headers
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+    
+    # Para sa ibang requests (GET, POST, etc.), lagyan ng CORS headers pagkatapos maproseso
+    response = await call_next(request)
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = request.headers.get("Access-Control-Request-Headers", "*")
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+app.include_router(historical_sad.router, prefix="/api/historical-sad", tags=["Historical SAD"])
+app.include_router(assessments.router, prefix="/api/assessments", tags=["Assessments"])
+app.include_router(tariff.router,     prefix="/api/tariff",     tags=["Tariff"])
+app.include_router(calculator.router, prefix="/api/calculator", tags=["Calculator"])
+app.include_router(clients.router,    prefix="/api/clients",    tags=["Clients"])
+app.include_router(shipments.router,  prefix="/api/shipments",  tags=["Shipments"])
+app.include_router(entries.router,    prefix="/api/entries",    tags=["Entries"])
+app.include_router(settings.router,   prefix="/api/settings",   tags=["Settings"])
+
+@app.get("/")
+def root(): return {"status": "ok", "app": "Customs Tech by Osias.org"}
+
+@app.get("/health")
+def health(): return {"status": "healthy"}
+-e 
+
+========== backend/app/schemas.py ==========
+
+from pydantic import BaseModel, computed_field
+from datetime import date
+from typing import Optional
+
+class AssessmentNoticeSchema(BaseModel):
+    # 1. DOCUMENT IDENTITY METADATA
+    vasp_reference_no: str
+    sad_registration_no: str
+    port_code: str
+    assessment_date: date
+    tin: str
+
+    # 2. RAW VALUES (IN USD OR FOREIGN CURRENCY)
+    fob: float
+    freight: float
+    insurance: float
+    bsp_exchange_rate: float
+    
+    # 3. RATES & FEES
+    tariff_rate_pct: float  # e.g., 0.15 for 15%
+    excise_tax: float = 0.0
+    ipf: float = 1000.00    # Import Processing Fee
+    arrastre: float = 0.0
+    wharfage: float = 0.0
+    brokerage_fee: float = 0.0
+    cds: float = 30.00      # Customs Documentary Stamp (Fixed)
+
+    # 4. COMPLIANCE FORMULAS (PHILIPPINE TAX LAW)
+    @computed_field
+    @property
+    def dutiable_value_php(self) -> float:
+        """DV = (FOB + Freight + Insurance) * BSP Exchange Rate"""
+        total_foreign = self.fob + self.freight + self.insurance
+        return round(total_foreign * self.bsp_exchange_rate, 2)
+
+    @computed_field
+    @property
+    def customs_duty_php(self) -> float:
+        """CUSTOMS DUTY = DV * Tariff Rate percentage"""
+        return round(self.dutiable_value_php * self.tariff_rate_pct, 2)
+
+    @computed_field
+    @property
+    def vat_base_php(self) -> float:
+        """VAT BASE (Landed Cost) = DV + Duty + Excise + Misc Fees"""
+        return round(
+            self.dutiable_value_php + 
+            self.customs_duty_php + 
+            self.excise_tax + 
+            self.ipf + 
+            self.arrastre + 
+            self.wharfage + 
+            self.brokerage_fee + 
+            self.cds, 2
+        )
+
+    @computed_field
+    @property
+    def vat_amount_php(self) -> float:
+        """VAT AMOUNT = VAT Base * 12%"""
+        return round(self.vat_base_php * 0.12, 2)
+
+    @computed_field
+    @property
+    def total_amount_payable(self) -> float:
+        """Total Payable to BOC. No double counting."""
+        return round(
+            self.customs_duty_php + 
+            self.vat_amount_php + 
+            self.excise_tax + 
+            self.ipf + 
+            self.arrastre + 
+            self.wharfage + 
+            self.cds, 2
+        )
+
+
+# ============================================================
+# CLIENTS
+# ============================================================
+from datetime import date as _date
+
+class ClientCreate(BaseModel):
+    company_name:   str
+    importer_tin:   Optional[str]  = None
+    cprs_status:    Optional[str]  = "Active"
+    cprs_expiry:    Optional[_date] = None
+    contact_person: Optional[str]  = None
+    email:          Optional[str]  = None
+    phone:          Optional[str]  = None
+
+class ClientResponse(ClientCreate):
+    id:                 str
+    created_at:         Optional[str]  = None
+    cprs_expiring_soon: Optional[bool] = False
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================
+# SHIPMENTS
+# ============================================================
+OPERATIONAL_STATUSES = [
+    "Documents Received",
+    "Entry Lodgement",
+    "Assessment/Payment",
+    "Gatepass Released",
+    "Delivered",
+]
+
+class ShipmentCreate(BaseModel):
+    client_id:          Optional[str]   = None
+    bl_awb_no:          Optional[str]   = None
+    registry_no:        Optional[str]   = None
+    carrier:            Optional[str]   = None
+    container_no:       Optional[str]   = None
+    port_of_entry:      Optional[str]   = None
+    eta:                Optional[_date] = None
+    operational_status: Optional[str]   = "Documents Received"
+
+class ShipmentStatusUpdate(BaseModel):
+    operational_status: str
+
+class ShipmentResponse(ShipmentCreate):
+    id:         str
+    created_at: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================
+# HISTORICAL SAD
+# ============================================================
+class HistoricalSADCreate(BaseModel):
+    sad_year:           int
+    sad_entry_no:       str
+    reference_bl:       Optional[str]   = None
+    client_name:        Optional[str]   = None
+    declared_value_php: Optional[float] = None
+    total_taxes_paid:   Optional[float] = None
+
+class HistoricalSADResponse(HistoricalSADCreate):
+    id:          str
+    archived_at: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================
+# GLOBAL SETTINGS
+# ============================================================
+class GlobalSettingsUpdate(BaseModel):
+    usd_to_php_rate:    Optional[float] = None
+    broker_name:        Optional[str]   = None
+    broker_prc_license: Optional[str]   = None
+    broker_tin:         Optional[str]   = None
+
+class GlobalSettingsResponse(GlobalSettingsUpdate):
+    id:         int
+    updated_at: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+-e 
+
+========== backend/parser.py ==========
+
+#!/usr/bin/env python3
+import re, sys, os
+from dotenv import load_dotenv
+
+# Awtomatikong hahanapin at babasahin ang .env file sa tabi ng script
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
+from core.config import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from supabase import create_client
+
+DATA = os.path.join(os.path.dirname(__file__), 'data', 'ph_tariff_organized.txt')
+BS   = 40
+
+CHAP_RE = re.compile(r'^---\s*CHAPTER\s+(\d+)\s*---', re.I)
+NUM_RE  = re.compile(r'^\d+(?:\.\d+)?$')
+CODE_RE = re.compile(r'^\d{4}\.\d{2}\.\d{2}(?:\.\d{3})?$')
+FN_RE   = re.compile(r'^(a\d+\w*|/[a-z])\s+(.+)', re.I)
+SKIP_RE = re.compile(r'^(MFN Rates|Hdg\.|No\.\s*Code|\(1\)|Starting|01 Jan|22 Jul|21 Jul|31 Dec|\d{1,3}$)')
+
+def clean(raw): return re.sub(r'^[-\s]+', '', raw).strip()
+def indent(raw):
+    m = re.match(r'^((?:-\s*)+)', raw)
+    return m.group(1).count('-') if m else 0
+def quota(code, desc):
+    if code.endswith('.100') or 'In-Quota' in desc: return 'in_quota'
+    if code.endswith('.200') or 'Out-Quota' in desc: return 'out_quota'
+    return None
+
+def parse(fp):
+    chaps, entries, fns = {}, [], {}
+    ch = None
+    for line in open(fp, encoding='utf-8', errors='replace'):
+        s = line.strip()
+        if not s or SKIP_RE.match(s): continue
+        m = CHAP_RE.match(s)
+        if m:
+            ch = int(m.group(1))
+            chaps[ch] = {'chapter_no': ch, 'section_no': None, 'section_title': None,
+                         'chapter_title': f'Chapter {ch}', 'chapter_notes': ''}
+            continue
+        m = FN_RE.match(s)
+        if m and not s[:1].isdigit():
+            fns[m.group(1)] = m.group(2); continue
+        if not s[:4].replace('.', '').isdigit(): continue
+        parts = s.split()
+        fn = parts.pop() if parts and re.match(r'^(a\d+\w*|/[a-z])$', parts[-1], re.I) else None
+        nums = []
+        while parts and NUM_RE.match(parts[-1]): nums.insert(0, float(parts.pop()))
+        while len(nums) < 6: nums.insert(0, None)
+        code = parts[0] if parts else ''
+        if not CODE_RE.match(code): continue
+        raw = ' '.join(parts[1:])
+        desc = clean(raw)
+        qt = quota(code, desc)
+        entries.append({'ahtn_code': code, 'description': desc,
+                        'indent_level': indent(raw), 'is_quota': qt is not None,
+                        'quota_type': qt, 'footnote': fn,
+                        'chapter_no': ch, 'rates': nums[-6:]})
+    return chaps, entries, fns
+
+def upload(chaps, entries, fns):
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    print(f"Chapters:{len(chaps)} Codes:{len(entries)} Footnotes:{len(fns)}")
+    print("Clearing old data...")
+    sb.table('hs_codes').delete().gte('id', 0).execute()
+    sb.table('tariff_chapters').delete().gte('id', 0).execute()
+    sb.table('tariff_footnotes').delete().gte('id', 0).execute()
+    print("Inserting chapters...")
+    cl = list(chaps.values())
+    for i in range(0, len(cl), BS):
+        sb.table('tariff_chapters').insert(cl[i:i+BS]).execute()
+    if fns:
+        print("Inserting footnotes...")
+        fl = [{'code': k, 'note': v} for k, v in fns.items()]
+        for i in range(0, len(fl), BS):
+            sb.table('tariff_footnotes').insert(fl[i:i+BS]).execute()
+    print("Inserting HS codes + rates...")
+    YRS = [2024, 2025, 2026, 2027, 2028]
+    IDX = [0, 2, 3, 4, 5]
+    for i in range(0, len(entries), BS):
+        b = entries[i:i+BS]
+        hs = [{k: v for k, v in e.items() if k != 'rates'} for e in b]
+        res = sb.table('hs_codes').insert(hs).execute()
+        im = {r['ahtn_code']: r['id'] for r in res.data}
+        rr = [{'hs_code_id': im[e['ahtn_code']], 'year': y, 'rate': (e['rates'][IDX[j]] or 0.0)}
+              for e in b if e['ahtn_code'] in im for j, y in enumerate(YRS)]
+        if rr: sb.table('tariff_rates').insert(rr).execute()
+        print(f"  {min(i+BS, len(entries))}/{len(entries)}", end='\r')
+    print(f"\n✅ Done! {len(entries)} HS codes loaded.")
+
+if __name__ == '__main__':
+    if not os.path.exists(DATA):
+        print(f"❌ Not found: {DATA}"); sys.exit(1)
+    print("Parsing tariff file...")
+    c, e, f = parse(DATA)
+    print("Uploading to Supabase...")
+    upload(c, e, f)
