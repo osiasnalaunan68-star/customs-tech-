@@ -1,0 +1,367 @@
+Quick flag before the code: this assumes Tailwind and shadcn/ui are already initialized in your Vite project (the `@/components/ui/*` imports, the `@/` path alias, and `lib/utils.ts`'s `cn()` helper all come from `npx shadcn@latest init`). Nothing in the original architecture doc mentioned Tailwind — it guessed plain CSS — and you haven't shown me the frontend folder, so I can't confirm it's there. If `npx shadcn@latest init` hasn't been run yet, do that first, then `npx shadcn@latest add input select table badge card dialog`, before pasting this in.
+
+Also: this supersedes the plain-CSS `api.ts` / `HsCodeLookup.tsx` from earlier — delete those if you don't want both versions sitting in the repo.
+
+```bash
+mkdir -p frontend/src/services frontend/src/pages
+
+cat > frontend/src/services/tariffApi.ts << 'EOF'
+// frontend/src/services/tariffApi.ts
+// Typed client for the /api/tariff/* endpoints (HS Code Lookup).
+// Set VITE_API_BASE_URL in frontend/.env(.local), e.g.:
+//   VITE_API_BASE_URL=http://localhost:8000        (local FastAPI/uvicorn)
+//   VITE_API_BASE_URL=https://your-app.onrender.com (Render deployment)
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+export interface HsCodeSearchResult {
+  id: number;
+  ahtn_code: string;
+  description: string;
+  indent_level: number;
+  is_quota: boolean;
+  quota_type: "in_quota" | "out_quota" | null;
+  chapter_no: number | null;
+  footnote: string | null;
+  rate: number | null;
+  year: number;
+}
+
+export interface TariffRateItem {
+  year: number;
+  rate: number | null;
+}
+
+export interface HsCodeDetail {
+  id: number;
+  ahtn_code: string;
+  description: string;
+  indent_level: number;
+  is_quota: boolean;
+  quota_type: "in_quota" | "out_quota" | null;
+  chapter_no: number | null;
+  footnote: string | null;
+  tariff_rates: TariffRateItem[];
+}
+
+export interface TariffChapter {
+  chapter_no: number;
+  chapter_title: string | null;
+  section_no: number | null;
+  section_title: string | null;
+}
+
+export interface SearchHsCodesParams {
+  q?: string;
+  codePrefix?: string;
+  chapter?: number;
+  code?: string;
+  year?: number;
+  limit?: number;
+}
+
+async function handleResponse<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Request failed with status ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** GET /api/tariff/codes — search/filter HS codes. Returns [] when nothing matches. */
+export async function searchHsCodes(
+  params: SearchHsCodesParams = {}
+): Promise<HsCodeSearchResult[]> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set("q", params.q);
+  if (params.codePrefix) qs.set("code_prefix", params.codePrefix);
+  if (params.chapter != null) qs.set("chapter", String(params.chapter));
+  if (params.code) qs.set("code", params.code);
+  if (params.year != null) qs.set("year", String(params.year));
+  if (params.limit != null) qs.set("limit", String(params.limit));
+
+  const res = await fetch(`${API_BASE_URL}/api/tariff/codes?${qs.toString()}`);
+  return handleResponse<HsCodeSearchResult[]>(res);
+}
+
+/** GET /api/tariff/code/{ahtnCode} — full detail + all years of rates. Throws on 404. */
+export async function getHsCode(ahtnCode: string): Promise<HsCodeDetail> {
+  const res = await fetch(`${API_BASE_URL}/api/tariff/code/${encodeURIComponent(ahtnCode)}`);
+  return handleResponse<HsCodeDetail>(res);
+}
+
+/** GET /api/tariff/chapters — for a chapter filter dropdown. */
+export async function listTariffChapters(): Promise<TariffChapter[]> {
+  const res = await fetch(`${API_BASE_URL}/api/tariff/chapters`);
+  return handleResponse<TariffChapter[]>(res);
+}
+EOF
+
+cat > frontend/src/pages/HsCodeLookup.tsx << 'EOF'
+// frontend/src/pages/HsCodeLookup.tsx
+import { useEffect, useState } from "react";
+import { Search, Loader2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  searchHsCodes,
+  getHsCode,
+  listTariffChapters,
+  type HsCodeSearchResult,
+  type HsCodeDetail,
+  type TariffChapter,
+} from "@/services/tariffApi";
+
+const CURRENT_YEAR = new Date().getFullYear();
+
+export default function HsCodeLookup() {
+  const [query, setQuery] = useState("");
+  const [chapterValue, setChapterValue] = useState("all");
+  const [chapters, setChapters] = useState<TariffChapter[]>([]);
+  const [results, setResults] = useState<HsCodeSearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [selected, setSelected] = useState<HsCodeDetail | null>(null);
+
+  useEffect(() => {
+    listTariffChapters()
+      .then(setChapters)
+      .catch(() => setChapters([]));
+  }, []);
+
+  useEffect(() => {
+    const hasFilter = query.trim() !== "" || chapterValue !== "all";
+    if (!hasFilter) {
+      setResults([]);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    const timer = setTimeout(() => {
+      searchHsCodes({
+        q: query.trim() || undefined,
+        chapter: chapterValue === "all" ? undefined : Number(chapterValue),
+        year: CURRENT_YEAR,
+        limit: 50,
+      })
+        .then(setResults)
+        .catch((err: Error) => setError(err.message))
+        .finally(() => setLoading(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query, chapterValue]);
+
+  async function openDetail(ahtnCode: string) {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setSelected(null);
+    setError(null);
+    try {
+      setSelected(await getHsCode(ahtnCode));
+    } catch (err) {
+      setError((err as Error).message);
+      setDetailOpen(false);
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  const hasQuery = query.trim() !== "" || chapterValue !== "all";
+
+  return (
+    <div className="container mx-auto max-w-5xl py-8 space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+          HS Code Lookup
+        </h1>
+        <p className="text-sm text-slate-500">
+          Search the AHTN tariff schedule by description or code.
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader className="pb-4">
+          <CardTitle className="text-base font-medium">Search</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search by description or AHTN code (e.g. live horses, 0101.21.00)"
+                className="pl-9"
+              />
+            </div>
+            <Select value={chapterValue} onValueChange={setChapterValue}>
+              <SelectTrigger className="w-full sm:w-64">
+                <SelectValue placeholder="All chapters" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All chapters</SelectItem>
+                {chapters.map((c) => (
+                  <SelectItem key={c.chapter_no} value={String(c.chapter_no)}>
+                    Ch. {c.chapter_no} — {c.chapter_title ?? "Untitled"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {error && (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </p>
+          )}
+
+          {loading && (
+            <div className="flex items-center gap-2 py-6 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Searching…
+            </div>
+          )}
+
+          {!loading && hasQuery && results.length === 0 && !error && (
+            <p className="py-6 text-sm text-slate-500">
+              No HS codes match that search. Try a broader term or a different chapter.
+            </p>
+          )}
+
+          {!hasQuery && !loading && (
+            <p className="py-6 text-sm text-slate-500">
+              Start typing a description or AHTN code to search.
+            </p>
+          )}
+
+          {results.length > 0 && (
+            <div className="overflow-hidden rounded-md border border-slate-200">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-36">AHTN Code</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead className="w-28">Rate ({CURRENT_YEAR})</TableHead>
+                    <TableHead className="w-28">Quota</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {results.map((r) => (
+                    <TableRow
+                      key={r.id}
+                      onClick={() => openDetail(r.ahtn_code)}
+                      className="cursor-pointer hover:bg-slate-50"
+                    >
+                      <TableCell className="font-mono text-sm">{r.ahtn_code}</TableCell>
+                      <TableCell
+                        style={{ paddingLeft: `${0.75 + r.indent_level * 1.25}rem` }}
+                      >
+                        {r.description}
+                      </TableCell>
+                      <TableCell>{r.rate != null ? `${r.rate}%` : "—"}</TableCell>
+                      <TableCell>
+                        {r.is_quota ? (
+                          <Badge
+                            variant="outline"
+                            className={
+                              r.quota_type === "in_quota"
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-orange-200 bg-orange-50 text-orange-700"
+                            }
+                          >
+                            {r.quota_type === "in_quota" ? "In-Quota" : "Out-Quota"}
+                          </Badge>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-mono">
+              {selected?.ahtn_code ?? "Loading…"}
+            </DialogTitle>
+            <DialogDescription>{selected?.description}</DialogDescription>
+          </DialogHeader>
+
+          {detailLoading && (
+            <div className="flex items-center gap-2 py-4 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading detail…
+            </div>
+          )}
+
+          {selected && !detailLoading && (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Year</TableHead>
+                  <TableHead>Rate</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {selected.tariff_rates
+                  .slice()
+                  .sort((a, b) => a.year - b.year)
+                  .map((tr) => (
+                    <TableRow key={tr.year}>
+                      <TableCell>{tr.year}</TableCell>
+                      <TableCell>{tr.rate != null ? `${tr.rate}%` : "—"}</TableCell>
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+EOF
+
+echo "✅ 2 files written."
+```
+
+Two things to wire up once this is in: add a route to this page in `App.tsx`/your router, and confirm `id: number` on `HsCodeSearchResult`/`HsCodeDetail` actually matches your `hs_codes.id` column type (swap to `string` if it's a UUID).
+
+
+
+
+fix thay all, you see the error right? and stalk our projectvyou several error and fix it, 
+
+Act as a Principal Systems Auditor from the Bureau of Customs (BOC) Management Information System and Technology Group (MISTG), sitting alongside a Veteran Licensed Customs Broker with 20 years of experience in tariff administration and post-clearance audits.
