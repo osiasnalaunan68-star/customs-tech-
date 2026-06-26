@@ -73,3 +73,90 @@ class AssessmentNoticeSchema(BaseModel):
             self.wharfage + 
             self.cds, 2
         )
+
+
+# ============================================================
+# CLIENTS
+# ============================================================
+from datetime import date as _date
+
+class ClientCreate(BaseModel):
+    company_name:   str
+    importer_tin:   Optional[str]  = None
+    cprs_status:    Optional[str]  = "Active"
+    cprs_expiry:    Optional[_date] = None
+    contact_person: Optional[str]  = None
+    email:          Optional[str]  = None
+    phone:          Optional[str]  = None
+
+class ClientResponse(ClientCreate):
+    id:                 str
+    created_at:         Optional[str]  = None
+    cprs_expiring_soon: Optional[bool] = False
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================
+# SHIPMENTS
+# ============================================================
+OPERATIONAL_STATUSES = [
+    "Documents Received",
+    "Entry Lodgement",
+    "Assessment/Payment",
+    "Gatepass Released",
+    "Delivered",
+]
+
+class ShipmentCreate(BaseModel):
+    client_id:          Optional[str]   = None
+    bl_awb_no:          Optional[str]   = None
+    registry_no:        Optional[str]   = None
+    carrier:            Optional[str]   = None
+    container_no:       Optional[str]   = None
+    port_of_entry:      Optional[str]   = None
+    eta:                Optional[_date] = None
+    operational_status: Optional[str]   = "Documents Received"
+
+class ShipmentStatusUpdate(BaseModel):
+    operational_status: str
+
+class ShipmentResponse(ShipmentCreate):
+    id:         str
+    created_at: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================
+# HISTORICAL SAD
+# ============================================================
+class HistoricalSADCreate(BaseModel):
+    sad_year:           int
+    sad_entry_no:       str
+    reference_bl:       Optional[str]   = None
+    client_name:        Optional[str]   = None
+    declared_value_php: Optional[float] = None
+    total_taxes_paid:   Optional[float] = None
+
+class HistoricalSADResponse(HistoricalSADCreate):
+    id:          str
+    archived_at: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ============================================================
+# GLOBAL SETTINGS
+# ============================================================
+class GlobalSettingsUpdate(BaseModel):
+    usd_to_php_rate:    Optional[float] = None
+    broker_name:        Optional[str]   = None
+    broker_prc_license: Optional[str]   = None
+    broker_tin:         Optional[str]   = None
+
+class GlobalSettingsResponse(GlobalSettingsUpdate):
+    id:         int
+    updated_at: Optional[str] = None
+
+    model_config = {"from_attributes": True}
